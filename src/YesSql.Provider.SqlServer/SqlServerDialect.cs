@@ -244,6 +244,19 @@ namespace YesSql.Provider.SqlServer
         }
 
         public override bool SupportsIfExistsBeforeTableName => true;
+        private const string _object_typeTableUserDefined = "U";
+        public override string GetDropTableString(string name)
+        {
+            var sb = new StringBuilder(string.Format("if object_id('{0}'),'{1}'",
+                QuoteForTableName(name),
+                _object_typeTableUserDefined)
+                );
+            sb.Append(" is not null");
+            sb.Append(" drop table ");
+            sb.Append(QuoteForTableName(name));
+          
+            return sb.ToString();
+        }
 
         public override int MaxParametersPerCommand => 2098;
     }
