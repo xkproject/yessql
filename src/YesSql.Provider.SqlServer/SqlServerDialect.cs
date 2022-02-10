@@ -247,7 +247,7 @@ namespace YesSql.Provider.SqlServer
         private const string _object_typeTableUserDefined = "U";
         public override string GetDropTableString(string name)
         {
-            var sb = new StringBuilder(string.Format("if object_id('{0}'),'{1}'",
+            var sb = new StringBuilder(string.Format("if object_id('{0}','{1}')",
                 QuoteForTableName(name),
                 _object_typeTableUserDefined)
                 );
