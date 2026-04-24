@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
+using System.Text;
 using YesSql.Sql;
 
 namespace YesSql.Provider.SqlServer
@@ -254,6 +255,19 @@ namespace YesSql.Provider.SqlServer
         }
 
         public override bool SupportsIfExistsBeforeTableName => true;
+        private const string _object_typeTableUserDefined = "U";
+        public override string GetDropTableString(string name, string schema)
+        {
+            var sb = new StringBuilder(string.Format("if object_id('{0}','{1}')",
+                QuoteForTableName(name, schema),
+                _object_typeTableUserDefined)
+                );
+            sb.Append(" is not null");
+            sb.Append(" drop table ");
+            sb.Append(QuoteForTableName(name, schema));
+
+            return sb.ToString();
+        }
 
         public override int MaxParametersPerCommand => 2098;
 
