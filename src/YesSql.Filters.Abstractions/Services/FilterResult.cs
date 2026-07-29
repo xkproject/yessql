@@ -2,20 +2,37 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using YesSql.Filters.Abstractions.Nodes;
+using YesSql.Filters.Nodes;
 
-namespace YesSql.Filters.Abstractions.Services
+namespace YesSql.Filters.Services
 {
+    /// <summary>
+    /// Represents the result of parsing a filter expression as a collection of <see cref="TermNode"/> instances, providing mapping and serialization helpers.
+    /// </summary>
+    /// <typeparam name="T">The type the filter is applied to.</typeparam>
+    /// <typeparam name="TTermOption">The type of the term options.</typeparam>
     public abstract class FilterResult<T, TTermOption> : IEnumerable<TermNode> where TTermOption : TermOption
     {
 
+        /// <summary>
+        /// The parsed terms keyed by their term name, compared case-insensitively.
+        /// </summary>
         protected Dictionary<string, TermNode> _terms = new Dictionary<string, TermNode>(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="FilterResult{T, TTermOption}"/> class with the specified term options.
+        /// </summary>
+        /// <param name="termOptions">The configured options keyed by term name.</param>
         protected FilterResult(IReadOnlyDictionary<string, TTermOption> termOptions)
         {
             TermOptions = termOptions;
         }
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="FilterResult{T, TTermOption}"/> class from a set of parsed terms.
+        /// </summary>
+        /// <param name="terms">The parsed terms to add to the result.</param>
+        /// <param name="termOptions">The configured options keyed by term name.</param>
         protected FilterResult(IReadOnlyList<TermNode> terms, IReadOnlyDictionary<string, TTermOption> termOptions)
         {
             TermOptions = termOptions;
@@ -42,8 +59,7 @@ namespace YesSql.Filters.Abstractions.Services
                 var option = TermOptions[term.TermName];
 
                 if (option.MapTo is Action<string, TModel> action &&
-                    term is TermOperationNode operationNode &&
-                    operationNode.Operation is UnaryNode node)
+                    term is TermOperationNode { Operation: UnaryNode node })
                 {
                     action(node.Value, model);
                 }
@@ -106,6 +122,10 @@ namespace YesSql.Filters.Abstractions.Services
         public bool TryRemove(string name)
             => _terms.Remove(name);        
 
+        /// <summary>
+        /// Returns an enumerator that iterates through the parsed terms.
+        /// </summary>
+        /// <returns>An enumerator for the parsed terms.</returns>
         public IEnumerator<TermNode> GetEnumerator()
             => _terms.Values.GetEnumerator();
 

@@ -7,6 +7,9 @@ using YesSql.Sql;
 
 namespace YesSql.Provider.SqlServer
 {
+    /// <summary>
+    /// Represents the SQL dialect for SQL Server.
+    /// </summary>
     public class SqlServerDialect : BaseDialect
     {
         private static readonly Dictionary<DbType, string> _columnTypes = new()
@@ -83,6 +86,9 @@ namespace YesSql.Provider.SqlServer
             };
         }
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SqlServerDialect"/> class.
+        /// </summary>
         public SqlServerDialect()
         {
             AddTypeHandler<TimeSpan, long>(x => x.Ticks);
@@ -98,15 +104,24 @@ namespace YesSql.Provider.SqlServer
             //Methods.Add("year", new TemplateFunction("datepart(year, {0})"));
         }
 
+        /// <inheritdoc />
         public override string Name => "SqlServer";
+        /// <inheritdoc />
         public override string IdentityColumnString => "[BIGINT] IDENTITY(1,1) primary key";
+        /// <inheritdoc />
         public override string LegacyIdentityColumnString => "[INT] IDENTITY(1,1) primary key";
+        /// <inheritdoc />
         public override string IdentitySelectString => "; select SCOPE_IDENTITY()";
+        /// <inheritdoc />
         public override string IdentityLastId => "SCOPE_IDENTITY()";
+        /// <inheritdoc />
         public override string RandomOrderByClause => "newid()";
+        /// <inheritdoc />
         public override byte DefaultDecimalPrecision => 19;
+        /// <inheritdoc />
         public override byte DefaultDecimalScale => 5;
 
+        /// <inheritdoc />
         public override string GetTypeName(DbType dbType, int? length, byte? precision, byte? scale)
         {
             if (length.HasValue)
@@ -170,6 +185,7 @@ namespace YesSql.Provider.SqlServer
             throw new Exception("DbType not found for: " + dbType);
         }
 
+        /// <inheritdoc />
         public override void Page(ISqlBuilder sqlBuilder, string offset, string limit)
         {
             if (offset != null)
@@ -194,16 +210,19 @@ namespace YesSql.Provider.SqlServer
             }
         }
 
+        /// <inheritdoc />
         public override string GetDropIndexString(string indexName, string tableName, string schema)
         {
             return "drop index if exists " + QuoteForColumnName(indexName) + " on " + QuoteForTableName(tableName, schema);
         }
 
+        /// <inheritdoc />
         public override string QuoteForColumnName(string columnName)
         {
             return "[" + columnName + "]";
         }
 
+        /// <inheritdoc />
         public override string QuoteForTableName(string tableName, string schema)
         {
             return string.IsNullOrEmpty(schema)
@@ -212,11 +231,13 @@ namespace YesSql.Provider.SqlServer
                 ;
         }
 
+        /// <inheritdoc />
         public override string QuoteForAliasName(string aliasName)
         {
             return "[" + aliasName + "]";
         }
 
+        /// <inheritdoc />
         public override void Concat(IStringBuilder builder, params Action<IStringBuilder>[] generators)
         {
             builder.Append("(");
@@ -234,11 +255,13 @@ namespace YesSql.Provider.SqlServer
             builder.Append(")");
         }
 
+        /// <inheritdoc />
         protected override string Quote(string value)
         {
             return "N" + SingleQuoteString + value.Replace(SingleQuoteString, DoubleSingleQuoteString) + SingleQuoteString;
         }
         
+        /// <inheritdoc />
         public override string GetSqlValue(object value)
         {
             if (value == null)
@@ -254,6 +277,7 @@ namespace YesSql.Provider.SqlServer
             return base.GetSqlValue(value);
         }
 
+        /// <inheritdoc />
         public override bool SupportsIfExistsBeforeTableName => true;
         private const string _object_typeTableUserDefined = "U";
         public override string GetDropTableString(string name, string schema)
@@ -269,8 +293,10 @@ namespace YesSql.Provider.SqlServer
             return sb.ToString();
         }
 
+        /// <inheritdoc />
         public override int MaxParametersPerCommand => 2098;
 
+        /// <inheritdoc />
         public override string GetCreateSchemaString(string schema)
         {
             return $"IF NOT EXISTS ( SELECT * FROM sys.schemas WHERE name = N'{schema}' ) EXEC('CREATE SCHEMA [{schema}]');";

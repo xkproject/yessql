@@ -7,6 +7,7 @@ using System.Data;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using YesSql.Data;
@@ -293,7 +294,7 @@ namespace YesSql.Services
                 static (query, builder, dialect, expression) =>
                 {
                     // Could be simplified if int[] could be casted to IEnumerable<object>
-                    var objects = Expression.Lambda(expression.Arguments[1]).Compile().DynamicInvoke() as IEnumerable;
+                    var objects = GetExpressionValue(expression.Arguments[1]) as IEnumerable;
                     var values = new List<object>();
 
                     foreach (var o in objects)
@@ -334,7 +335,7 @@ namespace YesSql.Services
                 static (query, builder, dialect, expression) =>
                 {
                     // Could be simplified if int[] could be casted to IEnumerable<object>
-                    var objects = Expression.Lambda(expression.Arguments[1]).Compile().DynamicInvoke() as IEnumerable;
+                    var objects = GetExpressionValue(expression.Arguments[1]) as IEnumerable;
                     var values = new List<object>();
 
                     foreach (var o in objects)
@@ -549,6 +550,41 @@ namespace YesSql.Services
         /// <summary>
         /// Converts an expression that is not based on a lambda parameter to its atomic constant value.
         /// </summary>
+        // Reads the runtime value of an expression without compiling a lambda for the common
+        // cases (constants and field/property access on closures or constants). Falls back to
+        // compiling only for shapes that aren't handled here. Unlike <see cref="Evaluate"/>, this
+        // has no side effects (it doesn't register parameter bindings) and is used when the value
+        // is inlined rather than parameterized for a compiled query.
+        private static object GetExpressionValue(Expression expression)
+        {
+            switch (expression.NodeType)
+            {
+                case ExpressionType.Constant:
+                    return ((ConstantExpression)expression).Value;
+
+                case ExpressionType.Convert:
+                    return GetExpressionValue(((UnaryExpression)expression).Operand);
+
+                case ExpressionType.MemberAccess:
+                    var memberExpression = (MemberExpression)expression;
+                    var instance = memberExpression.Expression == null
+                        ? null
+                        : GetExpressionValue(memberExpression.Expression);
+
+                    switch (memberExpression.Member)
+                    {
+                        case FieldInfo field:
+                            return field.GetValue(instance);
+                        case PropertyInfo property:
+                            return property.GetValue(instance);
+                    }
+
+                    break;
+            }
+
+            return Expression.Lambda(expression).Compile().DynamicInvoke();
+        }
+
         private ConstantExpression Evaluate(Expression expression, bool convertValue = true)
         {
             switch (expression.NodeType)
@@ -1316,26 +1352,23 @@ namespace YesSql.Services
                 }
             }
 
-            Task<IEnumerable<T>> IQuery<T>.ListAsync(CancellationToken cancellationToken)
+            async Task<IReadOnlyList<T>> IQuery<T>.ListAsync(CancellationToken cancellationToken)
+            {
+                var results = new List<T>();
+                await foreach (var item in ListImpl(cancellationToken))
+                {
+                    results.Add(item);
+                }
+                return results;
+            }
+
+            IAsyncEnumerable<T> IQuery<T>.ToAsyncEnumerable(CancellationToken cancellationToken)
             {
                 return ListImpl(cancellationToken);
             }
 
-#pragma warning disable CS8425 // Async-iterator member has one or more parameters of type 'CancellationToken' but none of them is decorated with the 'EnumeratorCancellation' attribute, so the cancellation token parameter from the generated 'IAsyncEnumerable<>.GetAsyncEnumerator' will be unconsumed
-            async IAsyncEnumerable<T> IQuery<T>.ToAsyncEnumerable(CancellationToken cancellationToken)
-#pragma warning restore CS8425 // Async-iterator member has one or more parameters of type 'CancellationToken' but none of them is decorated with the 'EnumeratorCancellation' attribute, so the cancellation token parameter from the generated 'IAsyncEnumerable<>.GetAsyncEnumerator' will be unconsumed
+            internal async IAsyncEnumerable<T> ListImpl([EnumeratorCancellation] CancellationToken cancellationToken)
             {
-                // TODO: [IAsyncEnumerable] Once Dapper supports IAsyncEnumerable we can replace this call by a non-buffered one
-                foreach (var item in await ListImpl(cancellationToken))
-                {
-                    yield return item;
-                }
-            }
-
-            internal async Task<IEnumerable<T>> ListImpl(CancellationToken cancellationToken)
-            {
-                // TODO: [IAsyncEnumerable] Once Dapper supports IAsyncEnumerable we can return it by default, and buffer it in ListAsync instead
-
                 // Flush any pending changes before doing a query (auto-flush)
                 await _query._session.FlushAsync(cancellationToken);
 
@@ -1369,19 +1402,43 @@ namespace YesSql.Services
                         }
 
                         var sql = sqlBuilder.ToSqlString();
-                        var key = new WorkerQueryKey(sql, _query._queryState._sqlBuilder.Parameters);
+                        var logger = _query._session._store.Configuration.Logger;
 
-                        return await _query._session._store.ProduceAsync(key, static (key, state) =>
+                        if (logger.IsEnabled(LogLevel.Debug))
                         {
-                            var logger = state.Query._session._store.Configuration.Logger;
+                            logger.LogDebug(sql);
+                        }
 
-                            if (logger.IsEnabled(LogLevel.Debug))
+                        // Stream the results without buffering them. The enumeration is driven manually so that
+                        // a failure while reading from the database still cancels the session (releasing the
+                        // transaction), as 'yield return' cannot be used inside a try/catch block.
+                        var enumerable = connection.QueryUnbufferedAsync<T>(sql, _query._queryState._sqlBuilder.Parameters, transaction);
+
+                        await using var enumerator = enumerable.GetAsyncEnumerator(cancellationToken);
+
+                        while (true)
+                        {
+                            T item;
+
+                            try
                             {
-                                logger.LogDebug(state.Sql);
+                                if (!await enumerator.MoveNextAsync())
+                                {
+                                    break;
+                                }
+
+                                item = enumerator.Current;
+                            }
+                            catch
+                            {
+                                // Don't use CancelAsync as we don't want to trigger a thread safety check, it's done in the finally block
+                                await _query._session.CancelAsyncInternal();
+
+                                throw;
                             }
 
-                            return state.Connection.QueryAsync<T>(new CommandDefinition(state.Sql, state.Query._queryState._sqlBuilder.Parameters, state.Transaction, flags: CommandFlags.Buffered, cancellationToken: state.CancellationToken));
-                        }, new { Query = _query, Sql = sql, Connection = connection, Transaction = transaction, CancellationToken = cancellationToken });
+                            yield return item;
+                        }
                     }
                     else
                     {
@@ -1398,36 +1455,41 @@ namespace YesSql.Services
                         // TODO: This could potentially be detected automically, for instance by creating a MultiMapIndex, but might require breaking changes
 
                         var sql = _query._queryState._deduplicate ? GetDeduplicatedQuery() : sqlBuilder.ToSqlString();
+                        var logger = _query._session._store.Configuration.Logger;
 
-                        var key = new WorkerQueryKey(sql, sqlBuilder.Parameters);
-
-                        var documents = await _query._session._store.ProduceAsync(key, static (key, state) =>
+                        if (logger.IsEnabled(LogLevel.Debug))
                         {
-                            var logger = state.Query._session._store.Configuration.Logger;
-
-                            if (logger.IsEnabled(LogLevel.Debug))
-                            {
-                                logger.LogDebug(state.Sql);
-                            }
-
-                            return state.Connection.QueryAsync<Document>(new CommandDefinition(state.Sql, state.Query._queryState._sqlBuilder.Parameters, state.Transaction, flags: CommandFlags.Buffered, cancellationToken: state.CancellationToken));
-                        }, new { Query = _query, Sql = sql, Connection = connection, Transaction = transaction, CancellationToken = cancellationToken });
-
-                        if (!documents.Any())
-                        {
-                            return [];
+                            logger.LogDebug(sql);
                         }
 
-                        // Clone documents returned from ProduceAsync as they might be shared across sessions
-                        return _query._session.Get<T>(documents.Select(x => x.Clone()), _query._collection).ToArray();
-                    }
-                }
-                catch
-                {
-                    // Don't use CancelAsync as we don't want to trigger a thread safety check, it's done in the finally block
-                    await _query._session.CancelAsyncInternal();
+                        var documents = new List<Document>();
+                        List<T> items;
 
-                    throw;
+                        try
+                        {
+                            await foreach (var document in connection.QueryUnbufferedAsync<Document>(sql, _query._queryState._sqlBuilder.Parameters, transaction).WithCancellation(cancellationToken))
+                            {
+                                documents.Add(document);
+                            }
+
+                            // Clone documents as they might be shared across sessions
+                            items = documents.Count == 0
+                                ? []
+                                : _query._session.Get<T>(documents.Select(x => x.Clone()), _query._collection).ToList();
+                        }
+                        catch
+                        {
+                            // Don't use CancelAsync as we don't want to trigger a thread safety check, it's done in the finally block
+                            await _query._session.CancelAsyncInternal();
+
+                            throw;
+                        }
+
+                        foreach (var item in items)
+                        {
+                            yield return item;
+                        }
+                    }
                 }
                 finally
                 {
@@ -1631,20 +1693,19 @@ namespace YesSql.Services
                 return FirstOrDefaultImpl(cancellationToken);
             }
 
-            Task<IEnumerable<T>> IQueryIndex<T>.ListAsync(CancellationToken cancellationToken)
+            async Task<IReadOnlyList<T>> IQueryIndex<T>.ListAsync(CancellationToken cancellationToken)
             {
-                return ListImpl(cancellationToken);
+                var results = new List<T>();
+                await foreach (var item in ListImpl(cancellationToken))
+                {
+                    results.Add(item);
+                }
+                return results;
             }
 
-#pragma warning disable CS8425 // Async-iterator member has one or more parameters of type 'CancellationToken' but none of them is decorated with the 'EnumeratorCancellation' attribute, so the cancellation token parameter from the generated 'IAsyncEnumerable<>.GetAsyncEnumerator' will be unconsumed
-            async IAsyncEnumerable<T> IQueryIndex<T>.ToAsyncEnumerable(CancellationToken cancellationToken)
-#pragma warning restore CS8425 // Async-iterator member has one or more parameters of type 'CancellationToken' but none of them is decorated with the 'EnumeratorCancellation' attribute, so the cancellation token parameter from the generated 'IAsyncEnumerable<>.GetAsyncEnumerator' will be unconsumed
+            IAsyncEnumerable<T> IQueryIndex<T>.ToAsyncEnumerable(CancellationToken cancellationToken)
             {
-                // TODO: [IAsyncEnumerable] Once Dapper supports IAsyncEnumerable we can replace this call by a non-buffered one
-                foreach (var item in await ListImpl(cancellationToken))
-                {
-                    yield return item;
-                }
+                return ListImpl(cancellationToken);
             }
 
             IQueryIndex<T> IQueryIndex<T>.Skip(int count)
