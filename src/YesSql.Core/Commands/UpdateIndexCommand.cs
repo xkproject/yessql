@@ -32,8 +32,7 @@ namespace YesSql.Commands
         {
             var type = Index.GetType();
 
-            var sql = Updates(type, dialect);
-            sql = sql.Replace(ParameterSuffix, "");
+            var sql = UpdatesForExecute(type, dialect);
             if (logger.IsEnabled(LogLevel.Trace))
             {
                 logger.LogTrace(sql);
@@ -61,7 +60,7 @@ namespace YesSql.Commands
                     {
                         logger.LogTrace(bridgeSqlAdd);
                     }
-                    await connection.ExecuteAsync(bridgeSqlAdd, dynamicParamsAdded, transaction);
+                    await connection.ExecuteAsync(new CommandDefinition(bridgeSqlAdd, dynamicParamsAdded, transaction, null, null, CommandFlags.Buffered, cancellationToken));
                 }
 
                 if (_deletedDocumentIds.Length > 0)
@@ -76,7 +75,7 @@ namespace YesSql.Commands
                     {
                         logger.LogTrace(bridgeSqlRemove);
                     }
-                    await connection.ExecuteAsync(bridgeSqlRemove, dynamicParamsDeleted, transaction);
+                    await connection.ExecuteAsync(new CommandDefinition(bridgeSqlRemove, dynamicParamsDeleted, transaction, null, null, CommandFlags.Buffered, cancellationToken));
                 }
             }
         }

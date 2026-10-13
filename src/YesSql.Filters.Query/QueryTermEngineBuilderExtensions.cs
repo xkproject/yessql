@@ -1,10 +1,13 @@
 using System;
 using System.Threading.Tasks;
-using YesSql.Filters.Abstractions.Builders;
+using YesSql.Filters.Builders;
 using YesSql.Filters.Query.Services;
 
 namespace YesSql.Filters.Query
 {
+    /// <summary>
+    /// Provides extension methods to add conditions to a <see cref="TermEngineBuilder{T, TTermOption}"/>.
+    /// </summary>
     public static class QueryTermFilterBuilderExtensions
     {
         /// <summary>

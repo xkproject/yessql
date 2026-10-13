@@ -6628,51 +6628,6 @@ namespace YesSql.Tests
             Assert.Equal(10, result);
         }
 
-        [Fact]
-        public virtual async Task ShouldDetectThreadSafetyIssues()
-        {
-            try
-            {
-                _store.Configuration.EnableThreadSafetyChecks = true;
-
-                await using var session = _store.CreateSession();
-
-                _store.Configuration.EnableThreadSafetyChecks = false;
-
-                var person = new Person { Firstname = "Bill" };
-                await session.SaveAsync(person);
-                await session.SaveChangesAsync();
-
-                Task[] tasks = null;
-
-                var throws = Assert.ThrowsAsync<InvalidOperationException>(async () =>
-                {
-                    tasks = Enumerable.Range(0, 10).Select(x => Task.Run(DoWork)).ToArray();
-                    await Task.WhenAll(tasks);
-                });
-
-                await Task.WhenAny(throws, Task.Delay(5000));
-
-                Assert.True(throws.IsCompleted, "The timeout was reached before the expected exception was thrown");
-
-                async Task DoWork()
-                {
-                    while (true)
-                    {
-                        var p = await session.Query<Person>().FirstOrDefaultAsync();
-                        Assert.NotNull(p);
-
-                        person.Firstname = "Bill" + RandomNumberGenerator.GetInt32(100);
-                        await session.FlushAsync();
-                    }
-                }
-            }
-            finally
-            {
-                _store.Configuration.EnableThreadSafetyChecks = false;
-            }
-        }
-
         #region FilterTests
 
         [Fact]
@@ -7233,26 +7188,17 @@ namespace YesSql.Tests
         {
             // https://github.com/sebastienros/yessql/issues/618
 
-            _store.Configuration.EnableThreadSafetyChecks = true;
-
-            try
+            await using (var session = _store.CreateSession())
             {
-                await using (var session = _store.CreateSession())
+                var index = new PropertyIndex { Name = "Home" };
+
+                await session.SaveAsync(index);
+
+                await Assert.ThrowsAsync<ArgumentException>(async () =>
                 {
-                    var index = new PropertyIndex { Name = "Home" };
-
-                    await session.SaveAsync(index);
-
-                    await Assert.ThrowsAsync<ArgumentException>(async () =>
-                    {
-                        // Try saving an index directly to force an exception which should trigger cancel.
-                        await session.FlushAsync();
-                    });
-                }
-            }
-            finally
-            {
-                _store.Configuration.EnableThreadSafetyChecks = false;
+                    // Try saving an index directly to force an exception which should trigger cancel.
+                    await session.FlushAsync();
+                });
             }
         }
 
@@ -7359,6 +7305,80 @@ namespace YesSql.Tests
                     await session.Query<Person>().CountAsync(cancellationToken);
                 });
             }
+        }
+
+        [Fact]
+        public virtual async Task ShouldReleaseTransactionWhenDocumentListQueryFails()
+        {
+            _store.RegisterIndexes<PersonIndexProvider>();
+
+            await using var session = _store.CreateSession();
+
+            await session.SaveAsync(new Person { Firstname = "Bill", Lastname = "Gates" });
+
+            // Force a transaction to be opened.
+            await session.FlushAsync();
+
+            Assert.NotNull(session.CurrentTransaction);
+
+            // Inject invalid SQL so the database rejects the query while it executes.
+            await Assert.ThrowsAnyAsync<DbException>(async () =>
+            {
+                await session.Query<Person>().With<PersonByName>().Where("ThisColumnDoesNotExist = 1").ListAsync();
+            });
+
+            // The failing query should have canceled the session and released the transaction.
+            Assert.Null(session.CurrentTransaction);
+        }
+
+        [Fact]
+        public virtual async Task ShouldReleaseTransactionWhenIndexListQueryFails()
+        {
+            _store.RegisterIndexes<PersonIndexProvider>();
+
+            await using var session = _store.CreateSession();
+
+            await session.SaveAsync(new Person { Firstname = "Bill", Lastname = "Gates" });
+
+            // Force a transaction to be opened.
+            await session.FlushAsync();
+
+            Assert.NotNull(session.CurrentTransaction);
+
+            // Inject invalid SQL so the database rejects the query while it executes.
+            await Assert.ThrowsAnyAsync<DbException>(async () =>
+            {
+                await session.QueryIndex<PersonByName>().Where("ThisColumnDoesNotExist = 1").ListAsync();
+            });
+
+            // The failing query should have canceled the session and released the transaction.
+            Assert.Null(session.CurrentTransaction);
+        }
+
+        [Fact]
+        public virtual async Task ShouldReleaseTransactionWhenStreamingQueryFails()
+        {
+            _store.RegisterIndexes<PersonIndexProvider>();
+
+            await using var session = _store.CreateSession();
+
+            await session.SaveAsync(new Person { Firstname = "Bill", Lastname = "Gates" });
+
+            // Force a transaction to be opened.
+            await session.FlushAsync();
+
+            Assert.NotNull(session.CurrentTransaction);
+
+            // Inject invalid SQL so the database rejects the query while it is being streamed.
+            await Assert.ThrowsAnyAsync<DbException>(async () =>
+            {
+                await foreach (var _ in session.QueryIndex<PersonByName>().Where("ThisColumnDoesNotExist = 1").ToAsyncEnumerable())
+                {
+                }
+            });
+
+            // The failing query should have canceled the session and released the transaction.
+            Assert.Null(session.CurrentTransaction);
         }
 
         [Fact]

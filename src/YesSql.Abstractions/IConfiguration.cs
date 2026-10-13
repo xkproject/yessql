@@ -100,11 +100,14 @@ namespace YesSql
         ISqlDialect SqlDialect { get; set; }
 
         /// <summary>
-        /// Gets or sets the identity column size. Default is <see cref="IdentityColumnSize.Int32"/>.
+        /// Gets or sets the identity column size. Default is <see cref="YesSql.IdentityColumnSize.Int32"/>.
         /// </summary>
         IdentityColumnSize IdentityColumnSize { get; set; }
     }
 
+    /// <summary>
+    /// Provides extension methods for configuring an <see cref="IConfiguration"/> instance.
+    /// </summary>
     public static class ConfigurationExtensions
     {
         /// <summary>

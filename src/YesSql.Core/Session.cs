@@ -865,6 +865,11 @@ namespace YesSql
                 return;
             }
 
+            // The number of commands per batch is capped by the configured page size and by the
+            // maximum the dialect allows (some providers can only batch a limited number of
+            // statements efficiently). A dialect that doesn't impose a cap returns int.MaxValue.
+            var commandsPageSize = Math.Min(_store.Configuration.CommandsPageSize, _dialect.MaxCommandsPageSize);
+
             var batches = new List<IIndexCommand>();
 
             // holds the queries, parameters and actions returned by an IIndexCommand, until we know we can
@@ -883,29 +888,52 @@ namespace YesSql
                 // Can the command be batched
                 if (command.AddToBatch(_dialect, localQueries, localDbCommand, localActions, index))
                 {
-                    // Does it go over the page or parameters limits
+                    // A single command that on its own exceeds the batch limits can never fit into any
+                    // batch. Adding it would produce an oversized batch that fails at execution time, so
+                    // it must be executed individually instead.
+                    var exceedsByItself =
+                        localQueries.Count > commandsPageSize ||
+                        localDbCommand.Parameters.Count > _store.Configuration.SqlDialect.MaxParametersPerCommand;
 
-                    var tooManyQueries = batch.Queries.Count + localQueries.Count > _store.Configuration.CommandsPageSize;
-                    var tooManyCommands = batch.Command.Parameters.Count + localDbCommand.Parameters.Count > _store.Configuration.SqlDialect.MaxParametersPerCommand;
-
-                    if (tooManyQueries || tooManyCommands)
+                    if (exceedsByItself)
                     {
-                        batches.Add(batch);
+                        // Finalize the current batch before running this command on its own
+                        if (batch.Queries.Count > 0)
+                        {
+                            batches.Add(batch);
 
-                        // Then start a new batch
-                        batch = new BatchCommand(_connection.CreateCommand());
+                            // Then start a new batch
+                            batch = new BatchCommand(_connection.CreateCommand());
+                        }
+
+                        batches.Add(command);
                     }
-
-                    // We can add the queries to the current batch
-                    batch.Queries.AddRange(localQueries);
-                    batch.Actions.AddRange(localActions);
-                    for (var i = localDbCommand.Parameters.Count - 1; i >= 0; i--)
+                    else
                     {
-                        // npgsql will prevent a parameter from being added to a collection
-                        // if it's already in another one
-                        var parameter = localDbCommand.Parameters[i];
-                        localDbCommand.Parameters.RemoveAt(i);
-                        batch.Command.Parameters.Add(parameter);
+                        // Does it go over the page or parameters limits
+
+                        var tooManyQueries = batch.Queries.Count + localQueries.Count > commandsPageSize;
+                        var tooManyCommands = batch.Command.Parameters.Count + localDbCommand.Parameters.Count > _store.Configuration.SqlDialect.MaxParametersPerCommand;
+
+                        if (tooManyQueries || tooManyCommands)
+                        {
+                            batches.Add(batch);
+
+                            // Then start a new batch
+                            batch = new BatchCommand(_connection.CreateCommand());
+                        }
+
+                        // We can add the queries to the current batch
+                        batch.Queries.AddRange(localQueries);
+                        batch.Actions.AddRange(localActions);
+                        for (var i = localDbCommand.Parameters.Count - 1; i >= 0; i--)
+                        {
+                            // npgsql will prevent a parameter from being added to a collection
+                            // if it's already in another one
+                            var parameter = localDbCommand.Parameters[i];
+                            localDbCommand.Parameters.RemoveAt(i);
+                            batch.Command.Parameters.Add(parameter);
+                        }
                     }
                 }
                 else
